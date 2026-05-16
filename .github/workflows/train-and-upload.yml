@@ -22,9 +22,10 @@ jobs:
         run: |
           pip install pandas numpy scikit-learn torch huggingface_hub
 
-      - name: Train model and save files
+      - name: Train model with real IMDb data
         run: |
           python << 'PYTHON_SCRIPT'
+          import pandas as pd
           import pickle
           import numpy as np
           import torch
@@ -33,101 +34,141 @@ jobs:
           from sklearn.feature_extraction.text import TfidfVectorizer
           from sklearn.preprocessing import LabelEncoder
           from sklearn.model_selection import train_test_split
-          from sklearn.metrics import accuracy_score
+          from sklearn.metrics import accuracy_score, classification_report
           import os
+
+          # ============================================
+          # 1. 加载 IMDb 数据集
+          # ============================================
+          print("=" * 60)
+          print("📂 加载 IMDb 数据集...")
+          print("=" * 60)
           
-          texts = [
-              "This movie is fantastic! I loved every minute.",
-              "Worst film ever made, complete waste of time.",
-              "Great acting and beautiful cinematography.",
-              "Terrible plot and boring characters.",
-              "Absolutely amazing, would watch again!",
-              "Disappointing and forgettable.",
-              "Brilliant story telling!",
-              "Not worth the money.",
-              "What a masterpiece!",
-              "I fell asleep halfway through.",
-              "Incredible performance by the lead actor.",
-              "Poor script and bad directing."
-          ]
-          labels = ["positive", "negative", "positive", "negative", 
-                    "positive", "negative", "positive", "negative",
-                    "positive", "negative", "positive", "negative"]
-
-          print("=" * 50)
-          print("📊 数据集信息")
-          print("=" * 50)
-          print(f"总样本数: {len(texts)}")
-          print(f"正面评论: {labels.count('positive')}")
-          print(f"负面评论: {labels.count('negative')}")
-
-          vectorizer = TfidfVectorizer(max_features=100)
+          # 尝试不同的文件名
+          if os.path.exists('imdb_balanced_10k.csv'):
+              df = pd.read_csv('imdb_balanced_10k.csv')
+          elif os.path.exists('IMDB Dataset.csv'):
+              df = pd.read_csv('IMDB Dataset.csv')
+          else:
+              # 如果都没有，使用小样本数据作为 fallback
+              print("⚠️ 未找到数据集，使用示例数据")
+              data = {
+                  'review': ['good movie', 'bad film', 'great', 'terrible'] * 250,
+                  'sentiment': ['positive', 'negative', 'positive', 'negative'] * 250
+              }
+              df = pd.DataFrame(data)
+          
+          # 检查列名
+          if 'review' in df.columns:
+              texts = df['review'].values
+              labels = df['sentiment'].values
+          elif 'text' in df.columns:
+              texts = df['text'].values
+              labels = df['label'].values
+          else:
+              print(f"列名: {df.columns.tolist()}")
+              raise ValueError("找不到文本列")
+          
+          print(f"✅ 加载完成: {len(texts)} 条评论")
+          print(f"   正面: {sum(labels == 'positive')}")
+          print(f"   负面: {sum(labels == 'negative')}")
+          
+          # ============================================
+          # 2. TF-IDF 特征提取（符合老师要求）
+          # ============================================
+          print("\n🔧 提取 TF-IDF 特征...")
+          vectorizer = TfidfVectorizer(
+              max_features=3000,  # 适中大小，平衡速度和效果
+              stop_words='english',
+              ngram_range=(1, 2)  # 使用 unigram + bigram
+          )
           X = vectorizer.fit_transform(texts).toarray()
           
           # 标签编码
           le = LabelEncoder()
           y = le.fit_transform(labels)
           
+          print(f"特征维度: {X.shape[1]}")
+          
+          # ============================================
+          # 3. 划分数据集
+          # ============================================
           X_train, X_test, y_train, y_test = train_test_split(
-              X, y, test_size=0.2, random_state=42
+              X, y, test_size=0.2, random_state=42, stratify=y
           )
           
-          print(f"\n训练集样本数: {len(X_train)}")
-          print(f"测试集样本数: {len(X_test)}")
+          print(f"\n训练集: {len(X_train)} 条")
+          print(f"测试集: {len(X_test)} 条")
           
+          # 保存预处理对象
           with open('tfidf_vectorizer.pkl', 'wb') as f:
               pickle.dump(vectorizer, f)
           with open('classes.pkl', 'wb') as f:
               pickle.dump(le.classes_, f)
           
-          print("\n✓ 预处理文件已保存:")
-          print(f"  - tfidf_vectorizer.pkl")
-          print(f"  - classes.pkl")
-
+          # ============================================
+          # 4. 神经网络模型（TF-IDF 作为第一层）
+          # ============================================
           class SentimentNN(nn.Module):
-              def __init__(self, input_dim, hidden_dim=32, output_dim=2):
+              def __init__(self, input_dim, hidden_dims=[256, 128, 64], output_dim=2, dropout=0.3):
                   super().__init__()
-                  self.network = nn.Sequential(
-                      nn.Linear(input_dim, hidden_dim),
-                      nn.ReLU(),
-                      nn.Dropout(0.2),
-                      nn.Linear(hidden_dim, output_dim),
-                      nn.LogSoftmax(dim=1)
-                  )
+                  layers = []
+                  prev_dim = input_dim
+                  
+                  for hidden_dim in hidden_dims:
+                      layers.append(nn.Linear(prev_dim, hidden_dim))
+                      layers.append(nn.BatchNorm1d(hidden_dim))
+                      layers.append(nn.ReLU())
+                      layers.append(nn.Dropout(dropout))
+                      prev_dim = hidden_dim
+                  
+                  layers.append(nn.Linear(prev_dim, output_dim))
+                  layers.append(nn.LogSoftmax(dim=1))
+                  
+                  self.network = nn.Sequential(*layers)
               
               def forward(self, x):
                   return self.network(x)
-
+          
           model = SentimentNN(input_dim=X_train.shape[1])
           criterion = nn.NLLLoss()
-          optimizer = optim.Adam(model.parameters(), lr=0.01)
+          optimizer = optim.Adam(model.parameters(), lr=0.001, weight_decay=1e-5)
           
-          # 转换为 PyTorch 张量
+          # 转换为张量
           X_train_t = torch.tensor(X_train, dtype=torch.float32)
           y_train_t = torch.tensor(y_train, dtype=torch.long)
           X_test_t = torch.tensor(X_test, dtype=torch.float32)
           y_test_t = torch.tensor(y_test, dtype=torch.long)
           
-          print("\n" + "=" * 50)
-          print("🚀 开始训练")
-          print("=" * 50)
-          print(f"{'Epoch':<10} {'Train Loss':<12} {'Test Acc':<10}")
-          print("-" * 35)
+          # ============================================
+          # 5. 训练
+          # ============================================
+          print("\n" + "=" * 60)
+          print("🚀 开始训练...")
+          print("=" * 60)
+          
+          batch_size = 128
+          dataset = torch.utils.data.TensorDataset(X_train_t, y_train_t)
+          dataloader = torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=True)
           
           best_acc = 0
-          best_epoch = 0
           
-          for epoch in range(200):
-              # 训练模式
+          for epoch in range(20):
               model.train()
-              optimizer.zero_grad()
-              outputs = model(X_train_t)
-              loss = criterion(outputs, y_train_t)
-              loss.backward()
-              optimizer.step()
+              total_loss = 0
               
-              # 每 10 个 epoch 评估一次测试集准确率
-              if (epoch + 1) % 10 == 0:
+              for X_batch, y_batch in dataloader:
+                  optimizer.zero_grad()
+                  outputs = model(X_batch)
+                  loss = criterion(outputs, y_batch)
+                  loss.backward()
+                  optimizer.step()
+                  total_loss += loss.item()
+              
+              avg_loss = total_loss / len(dataloader)
+              
+              # 每 5 轮评估一次
+              if (epoch + 1) % 5 == 0:
                   model.eval()
                   with torch.no_grad():
                       test_outputs = model(X_test_t)
@@ -136,15 +177,18 @@ jobs:
                       
                       if acc > best_acc:
                           best_acc = acc
-                          best_epoch = epoch + 1
                       
-                  print(f"{epoch+1:<10} {loss.item():<12.4f} {acc:<10.2%}")
+                  print(f"Epoch {epoch+1:2d}/20 | Loss: {avg_loss:.4f} | Acc: {acc:.2%}")
           
-          print("-" * 35)
-          
+          # 保存模型
           torch.save(model.state_dict(), 'model_weights.pth')
           
-          print(f"\n✓ 模型已保存: model_weights.pth")
+          # ============================================
+          # 6. 最终评估
+          # ============================================
+          print("\n" + "=" * 60)
+          print("📈 最终结果")
+          print("=" * 60)
           
           model.eval()
           with torch.no_grad():
@@ -152,29 +196,16 @@ jobs:
               final_predictions = torch.argmax(final_outputs, dim=1)
               final_acc = accuracy_score(y_test, final_predictions.numpy())
           
-          print("\n" + "=" * 50)
-          print("📈 最终结果")
-          print("=" * 50)
-          print(f"🏆 最佳测试准确率: {best_acc:.2%} (在第 {best_epoch} 个 epoch)")
-          print(f"🎯 最终测试准确率: {final_acc:.2%}")
-          print("=" * 50)
+          print(f"🎯 测试集准确率: {final_acc:.2%}")
           
-          # 显示每个类别的预测效果
-          from sklearn.metrics import classification_report
-          print("\n📋 详细分类报告:")
+          print("\n📋 分类报告:")
           print(classification_report(y_test, final_predictions.numpy(), 
                                       target_names=le.classes_))
+          print("=" * 60)
           PYTHON_SCRIPT
 
-      - name: Verify files exist
-        run: |
-          echo "========================================="
-          echo "📁 生成的文件检查"
-          echo "========================================="
-          ls -lh *.pth *.pkl 2>/dev/null
-          echo ""
-          echo "文件大小:"
-          du -sh *.pth *.pkl 2>/dev/null
+      - name: Verify files
+        run: ls -lh *.pth *.pkl
 
       - name: Upload to Hugging Face
         env:
@@ -182,54 +213,19 @@ jobs:
         run: |
           python << 'UPLOAD_SCRIPT'
           import os
-          import sys
           from huggingface_hub import HfApi
 
           token = os.environ.get('HF_TOKEN')
-          if not token:
-              print("❌ ERROR: HF_TOKEN not set")
-              sys.exit(1)
-          
           repo_id = "Liyz510/imdb-sentiment-model"
-          print(f"📤 上传到: {repo_id}")
-          
+
           api = HfApi()
-          
-          # 确保仓库存在
-          try:
-              api.create_repo(repo_id, token=token, exist_ok=True)
-              print("✓ 仓库已就绪")
-          except Exception as e:
-              print(f"⚠️ 仓库问题: {e}")
-          
-          # 上传文件
+          api.create_repo(repo_id, token=token, exist_ok=True)
+
           files = ["model_weights.pth", "tfidf_vectorizer.pkl", "classes.pkl"]
-          uploaded = 0
-          
           for file in files:
               if os.path.exists(file):
-                  print(f"  上传 {file}...")
-                  try:
-                      api.upload_file(
-                          path_or_fileobj=file,
-                          path_in_repo=file,
-                          repo_id=repo_id,
-                          token=token,
-                      )
-                      print(f"  ✓ {file} 上传成功")
-                      uploaded += 1
-                  except Exception as e:
-                      print(f"  ✗ {file} 上传失败: {e}")
-              else:
-                  print(f"  ✗ {file} 不存在")
-          
-          print("\n" + "=" * 50)
-          print(f"📊 上传总结: {uploaded}/3 个文件上传成功")
-          print(f"🔗 查看地址: https://huggingface.co/{repo_id}/tree/main")
-          print("=" * 50)
-          UPLOAD_SCRIPT
+                  api.upload_file(file, file, repo_id, token=token)
+                  print(f"✅ Uploaded {file}")
 
-      - name: Final status
-        run: |
-          echo "✅ Workflow 执行完成！"
-          echo "准确率可以在上面的 'Train model' 步骤中查看"
+          print(f"🔗 https://huggingface.co/{repo_id}/tree/main")
+          UPLOAD_SCRIPT
