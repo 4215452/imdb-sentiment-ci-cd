@@ -36,7 +36,6 @@ jobs:
           from sklearn.metrics import accuracy_score
           from sklearn.preprocessing import LabelEncoder
 
-          # 创建示例数据（因为没有真实 CSV，这里用示例数据演示）
           reviews = [
               "This movie is great! I loved it",
               "Terrible film, waste of time",
@@ -54,19 +53,16 @@ jobs:
 
           df = pd.DataFrame({'review': reviews, 'sentiment': sentiments})
 
-          # 标签编码
           le = LabelEncoder()
           y_encoded = le.fit_transform(df['sentiment'])
           with open('classes.pkl', 'wb') as f:
               pickle.dump(le.classes_, f)
 
-          # TF-IDF 特征
           vectorizer = TfidfVectorizer(max_features=100)
           X_tfidf = vectorizer.fit_transform(df['review']).toarray().astype(np.float32)
           with open('tfidf_vectorizer.pkl', 'wb') as f:
               pickle.dump(vectorizer, f)
 
-          # 简单神经网络
           class SimpleNN(nn.Module):
               def __init__(self, input_dim):
                   super().__init__()
@@ -82,7 +78,6 @@ jobs:
           criterion = nn.CrossEntropyLoss()
           optimizer = optim.Adam(model.parameters(), lr=0.01)
 
-          # 训练
           X_tensor = torch.tensor(X_tfidf)
           y_tensor = torch.tensor(y_encoded)
 
@@ -93,25 +88,20 @@ jobs:
               loss.backward()
               optimizer.step()
 
-          # 保存模型
           torch.save(model.state_dict(), 'model_weights.pth')
           print("Model trained and saved successfully!")
           EOF
 
-      - name: Run training
-        run: python train.py
-
-      - name: Upload to Hugging Face Hub
+      - name: Upload to Hugging Face
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           python - << 'EOF'
           import os
           from huggingface_hub import HfApi
-          import pickle
 
           token = os.environ["HF_TOKEN"]
-          repo_id = "${{ github.repository_owner }}/imdb-sentiment-model"
+          repo_id = "Liyz510/imdb-sentiment-model"
 
           api = HfApi()
           api.create_repo(repo_id, token=token, exist_ok=True)
