@@ -1,4 +1,4 @@
-name: Train and Upload to Hugging Face (92%+ Accuracy)
+name: Train and Upload to Hugging Face
 
 on:
   push:
@@ -37,19 +37,15 @@ jobs:
           print("📥 从 Hugging Face 下载 IMDB 50k 数据集...")
           print("=" * 60)
           
-          # 下载 IMDB 数据集（50,000 条标注影评）
           dataset = load_dataset("imdb")
           
-          # 合并训练集和测试集
           train_df = dataset['train'].to_pandas()
           test_df = dataset['test'].to_pandas()
           df = pd.concat([train_df, test_df], ignore_index=True)
           
-          # 标准化列名：text -> review, label -> sentiment
           df = df.rename(columns={'text': 'review', 'label': 'sentiment'})
           df['sentiment'] = df['sentiment'].map({0: 'negative', 1: 'positive'})
           
-          # 保存为 CSV
           df.to_csv('imdb_50k.csv', index=False)
           
           print(f"\n✅ 下载完成!")
@@ -76,7 +72,6 @@ jobs:
           import os
           import re
           from nltk.corpus import stopwords
-          import nltk
           
           print("=" * 70)
           print("🎯 高准确率情感分析模型 (目标: 92%+)")
@@ -220,7 +215,6 @@ jobs:
           X_val_t = torch.tensor(X_val, dtype=torch.float32)
           y_val_t = torch.tensor(y_val, dtype=torch.long)
           X_test_t = torch.tensor(X_test, dtype=torch.float32)
-          y_test_t = torch.tensor(y_test, dtype=torch.long)
           
           # DataLoader
           train_dataset = TensorDataset(X_train_t, y_train_t)
@@ -299,7 +293,7 @@ jobs:
           # 7. 测试集评估
           # ============================================
           X_test_t = X_test_t.to(device)
-          y_test_t = y_test_t.to(device)
+          y_test_t = torch.tensor(y_test, dtype=torch.long).to(device)
           
           model.eval()
           with torch.no_grad():
@@ -334,37 +328,71 @@ jobs:
 
       - name: Verify files
         run: |
-          echo "生成的模型文件:"
+          echo "========================================="
+          echo "📁 生成的模型文件"
+          echo "========================================="
           ls -lh *.pth *.pkl *.txt 2>/dev/null
-          cat model_info.txt
+          echo ""
+          echo "模型信息:"
+          cat model_info.txt 2>/dev/null
 
       - name: Upload to Hugging Face
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
-          python << 'UPLOAD_SCRIPT'
+          pip install --upgrade huggingface_hub
+          python -c "
           import os
           from huggingface_hub import HfApi
-
+          
           token = os.environ.get('HF_TOKEN')
-          repo_id = "Liyz510/imdb-sentiment-model"
-
+          if not token:
+              print('❌ HF_TOKEN not found')
+              exit(1)
+          
+          repo_id = 'Liyz510/imdb-sentiment-model'
+          print(f'📤 Uploading to {repo_id}')
+          
           api = HfApi()
-          api.create_repo(repo_id, token=token, exist_ok=True)
-
-          files = ["model_weights.pth", "tfidf_vectorizer.pkl", "classes.pkl", "model_info.txt"]
-          for file in files:
+          
+          # 创建或获取仓库
+          try:
+              api.create_repo(repo_id, token=token, exist_ok=True)
+              print('✅ Repo ready')
+          except Exception as e:
+              print(f'Repo exists: {e}')
+          
+          # 上传文件
+          files_to_upload = ['model_weights.pth', 'tfidf_vectorizer.pkl', 'classes.pkl', 'model_info.txt']
+          uploaded = 0
+          
+          for file in files_to_upload:
               if os.path.exists(file):
-                  api.upload_file(file, file, repo_id, token=token)
-                  print(f"✅ Uploaded {file}")
-
-          print(f"\n🔗 https://huggingface.co/{repo_id}/tree/main")
-          UPLOAD_SCRIPT
+                  print(f'  Uploading {file}...')
+                  try:
+                      api.upload_file(
+                          path_or_fileobj=file,
+                          path_in_repo=file,
+                          repo_id=repo_id,
+                          token=token
+                      )
+                      print(f'  ✅ {file} uploaded')
+                      uploaded += 1
+                  except Exception as e:
+                      print(f'  ❌ {file} failed: {e}')
+              else:
+                  print(f'  ⚠️ {file} not found')
+          
+          print(f'\n📊 Uploaded {uploaded}/{len(files_to_upload)} files')
+          print(f'🔗 https://huggingface.co/{repo_id}/tree/main')
+          "
 
       - name: Show final result
         run: |
           echo ""
           echo "========================================="
           echo "🏆 训练完成！"
+          echo "========================================="
           cat model_info.txt
           echo "========================================="
+          echo "🔗 Hugging Face: https://huggingface.co/Liyz510/imdb-sentiment-model/tree/main"
